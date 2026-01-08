@@ -1,0 +1,330 @@
+openapi: 3.0.3
+info:
+  title: API de Dados do IBGE (SIDRA)
+  description: Documentação oficial da API de metadados e dados agregados do IBGE.
+  version: 1.0.0
+  contact:
+    name: IBGE
+    url: https://www.ibge.gov.br/
+  license:
+    name: Dados Abertos
+    url: https://www.ibge.gov.br/estatisticas/sociais/populacao/9109-projecao-da-populacao.html?=&t=sobre
+
+servers:
+  - url: https://servicodados.ibge.gov.br/api/v3
+    description: Servidor principal da API
+
+paths:
+  /agregados:
+    get:
+      summary: Lista todos os agregados (tabelas) disponíveis
+      description: Retorna o conjunto de pesquisas e suas respectivas tabelas de dados agregados.
+      tags:
+        - Agregados
+      parameters:
+        - name: periodo
+          in: query
+          description: Filtra pesquisas com resultados para o período (formato P + identificador).
+          schema:
+            type: string
+          example: P5[202001]
+        - name: assunto
+          in: query
+          description: Filtra pesquisas que contêm o assunto informado.
+          schema:
+            type: integer
+          example: 70
+        - name: classificacao
+          in: query
+          description: Filtra pesquisas com a classificação informada.
+          schema:
+            type: integer
+          example: 12896
+        - name: periodicidade
+          in: query
+          description: Filtra por periodicidade de divulgação.
+          schema:
+            type: string
+          example: P5
+        - name: nivel
+          in: query
+          description: Filtra por nível geográfico.
+          schema:
+            type: string
+          example: N6
+      responses:
+        '200':
+          description: Lista de agregados
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Agregado'
+
+  /agregados/{agregado}/localidades/{nivel}:
+    get:
+      summary: Obtém localidades por agregado e nível geográfico
+      description: Retorna as localidades associadas a um agregado específico.
+      tags:
+        - Localidades
+      parameters:
+        - name: agregado
+          in: path
+          required: true
+          description: Identificador numérico do agregado (tabela).
+          schema:
+            type: integer
+          example: 1712
+        - name: nivel
+          in: path
+          required: true
+          description: Identificador do nível geográfico.
+          schema:
+            type: string
+          example: N6
+      responses:
+        '200':
+          description: Lista de localidades
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Localidade'
+
+  /agregados/{agregado}/metadados:
+    get:
+      summary: Obtém metadados do agregado
+      description: Retorna informações detalhadas do agregado, como variáveis, classificações e níveis territoriais.
+      tags:
+        - Metadados
+      parameters:
+        - name: agregado
+          in: path
+          required: true
+          schema:
+            type: integer
+          example: 1712
+      responses:
+        '200':
+          description: Metadados do agregado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Metadados'
+
+  /agregados/{agregado}/períodos:
+    get:
+      summary: Lista períodos disponíveis para o agregado
+      description: Retorna os períodos (anos, meses, trimestres) com dados disponíveis.
+      tags:
+        - Períodos
+      parameters:
+        - name: agregado
+          in: path
+          required: true
+          schema:
+            type: integer
+          example: 1712
+      responses:
+        '200':
+          description: Lista de períodos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /agregados/{agregado}/períodos/{periodos}/variáveis/{variavel}:
+    get:
+      summary: Obtém dados agregados completos
+      description: Retorna resultados numéricos cruzando variáveis, períodos, localidades e classificações.
+      tags:
+        - Dados
+      parameters:
+        - name: agregado
+          in: path
+          required: true
+          schema:
+            type: integer
+          example: 1712
+        - name: periodos
+          in: path
+          required: true
+          description: Períodos desejados (separados por |).
+          schema:
+            type: string
+          example: "202301|202302"
+        - name: variavel
+          in: path
+          required: true
+          description: IDs das variáveis (separadas por |).
+          schema:
+            type: string
+          example: "214|1982"
+      responses:
+        '200':
+          description: Dados agregados
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DadosAgregados'
+
+  /agregados/{agregado}/variáveis/{variavel}:
+    get:
+      summary: Obtém últimos 6 períodos de dados agregados (atalho)
+      description: Retorna automaticamente os dados dos últimos 6 períodos disponíveis.
+      tags:
+        - Dados
+      parameters:
+        - name: agregado
+          in: path
+          required: true
+          schema:
+            type: integer
+          example: 1712
+        - name: variavel
+          in: path
+          required: true
+          description: IDs das variáveis separadas por |.
+          schema:
+            type: string
+          example: "214|1982"
+        - name: localidades
+          in: query
+          required: true
+          description: "Identificadores geográficos (ex: BR, N6[3550308])."
+          schema:
+            type: string
+          example: BR
+        - name: classificacao
+          in: query
+          description: "Filtros por categorias (ex: 226[4844]|218[4780])."
+          schema:
+            type: string
+          example: "226[4844]|218[4780]"
+        - name: view
+          in: query
+          description: Modo de visualização.
+          schema:
+            type: string
+            enum: [OLAP, flat]
+          example: flat
+      responses:
+        '200':
+          description: Dados dos últimos 6 períodos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DadosAgregados'
+
+components:
+  schemas:
+    Agregado:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: ID do agregado
+        nome:
+          type: string
+          description: Nome da tabela/pesquisa
+        periodicidade:
+          type: string
+        assunto:
+          type: string
+        nivelTerritorial:
+          type: string
+
+    Localidade:
+      type: object
+      properties:
+        id:
+          type: string
+        nome:
+          type: string
+        nivel:
+          type: string
+
+    Metadados:
+      type: object
+      properties:
+        id:
+          type: integer
+        variaveis:
+          type: array
+          items:
+            $ref: '#/components/schemas/Variavel'
+        classificacoes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Classificacao'
+        niveisGeograficos:
+          type: array
+          items:
+            type: string
+
+    Variavel:
+      type: object
+      properties:
+        id:
+          type: integer
+        nome:
+          type: string
+        unidade:
+          type: string
+
+    Classificacao:
+      type: object
+      properties:
+        id:
+          type: integer
+        nome:
+          type: string
+        categorias:
+          type: array
+          items:
+            $ref: '#/components/schemas/Categoria'
+
+    Categoria:
+      type: object
+      properties:
+        id:
+          type: integer
+        nome:
+          type: string
+
+    DadosAgregados:
+      type: object
+      properties:
+        agregado:
+          type: integer
+        variaveis:
+          type: array
+          items:
+            type: string
+        localidades:
+          type: array
+          items:
+            type: string
+        periodos:
+          type: array
+          items:
+            type: string
+        valores:
+          type: array
+          items:
+            type: object
+            properties:
+              variavel:
+                type: string
+              localidade:
+                type: string
+              periodo:
+                type: string
+              valor:
+                type: number
+              classificacao:
+                type: string
