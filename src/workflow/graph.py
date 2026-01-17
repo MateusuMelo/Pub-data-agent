@@ -1,6 +1,7 @@
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 
+from src.agents.communicator.node import communicator_node
 from src.agents.collector.node import collector_node
 from src.agents.planner.node import planner_node
 from src.agents.state import AgentState
