@@ -10,7 +10,7 @@ logging.basicConfig(
 initial_state: AgentState = {
     "messages": [
         HumanMessage(
-            content="Segundo a pesquisa mensal de emprego qual a Taxa de desemprego? "
+            content="Quantidade populacional por região"
         )
     ],
     "execution_plan": [],
