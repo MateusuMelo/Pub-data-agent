@@ -36,7 +36,7 @@ def get_collector_agent_s():
 def get_collector_agent_m():
     return llm_qwen3_m.with_structured_output(
         AgregadoID,
-        method="json_schema",  # importante pra evitar blá-blá-blá
+        method="json_schema",  # important to avoid blá-blá-blá
         strict=True
     )
 
