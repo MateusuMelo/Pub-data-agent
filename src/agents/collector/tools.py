@@ -13,7 +13,8 @@ from src.memory.knowledge.vector_store import get_ibge_knowledge_base
 def _search_kb(
         query: str,
         *,
-        tipo_filtro: str | None = None,  # Renomeei para ficar claro
+        tipo_filtro: str | None = None,
+        source: str | None = "tipo",
         k: int = 10
 ):
     """
@@ -33,7 +34,7 @@ def _search_kb(
         results = kb.vector_store.similarity_search_with_score(
             enhanced_query,
             k=k * 2,  # Busca mais para filtrar depois
-            filter={"tipo": tipo_filtro}
+            filter={source: tipo_filtro}
         )
     else:
         results = kb.vector_store.similarity_search_with_score(
@@ -43,6 +44,66 @@ def _search_kb(
 
     return results
 
+
+@tool
+def ibge_agregado_id_search(query: str) -> dict[str, str | int | list[Any]] | list[Any]:
+    """
+    Busca identificadores IBGE pelo NOME ou conceito relacionado.
+    Retorna resultados estruturados com códigos e metadados.
+
+    Args:
+        query: Termo de busca (ex: "PIB", "população", "desemprego")
+
+    Returns:
+        dict: {
+            "id": str,
+            "nome": str,
+            "tipo": str,
+            "score": float,
+            "metadata": dict (opcional)
+        }
+    """
+
+    # Buscar identificadores
+    results = _search_kb(
+        query=query,
+        tipo_filtro="ibge_agregado",
+        source="source",
+        k=15
+    )
+
+    if not results:
+        # Tentar sem filtro se não encontrar com filtro
+        results = _search_kb(
+            query=query,
+            tipo_filtro=None,
+            k=10
+        )
+
+    if not results:
+        return {
+            "status": "not_found",
+            "count": 0,
+            "message": "Nenhum identificador IBGE encontrado para esta consulta.",
+            "results": []
+        }
+
+    # Estruturar resultados
+    structured_results = []
+    for doc, score in results:
+        result_item = {
+            "id": doc.metadata.get("id", "N/A"),
+            "nome": doc.metadata.get("nome", "N/A"),
+            "tipo": doc.metadata.get("pesquisa_nome", "N/A"),
+            "score": float(score),
+            "descricao": doc.metadata.get("descricao", ""),
+            "frequencia": doc.metadata.get("frequencia", ""),
+            "unidade": doc.metadata.get("unidade", ""),
+            "metadata": {k: v for k, v in doc.metadata.items() if v}
+        }
+        structured_results.append(result_item)
+
+    return structured_results
 
 @tool
 def ibge_assunto_id_search(query: str) -> str:

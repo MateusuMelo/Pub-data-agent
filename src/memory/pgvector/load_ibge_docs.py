@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import pandas as pd
 from langchain_core.documents import Document
@@ -160,6 +160,88 @@ def load_identificadores_csv(csv_file_path: str) -> List[Document]:
     return documents
 
 
+def load_agregados_csv(csv_file_path: str) -> List[Document]:
+    """
+    Carrega agregados IBGE com conteúdo semântico OTIMIZADO.
+
+    CSV esperado:
+        pesquisa_id,pesquisa_nome,agregado_id,agregado_nome
+        D5,Áreas Urbanizadas,8418,"Áreas urbanizadas, Loteamento vazio, Área total mapeada e Subcategorias"
+        CL,Cadastro Central de Empresas,1685,"Unidades locais, empresas e outras organizações..."
+    """
+
+    if not os.path.exists(csv_file_path):
+        raise FileNotFoundError(f"Arquivo não encontrado: {csv_file_path}")
+
+    logger.info(f"📂 Carregando agregados IBGE de: {csv_file_path}")
+
+    df = pd.read_csv(csv_file_path)
+
+    # Log inicial do CSV
+    logger.info(f"📊 CSV carregado: {len(df)} registros")
+
+    # Contagem por pesquisa
+    pesquisa_counts = df['pesquisa_nome'].value_counts()
+    logger.info(f"📋 Pesquisas encontradas: {len(pesquisa_counts)}")
+    for pesquisa, count in pesquisa_counts.head(10).items():
+        logger.info(f"  - {pesquisa}: {count} agregados")
+
+    # Validar colunas obrigatórias
+    required_columns = {"pesquisa_id", "pesquisa_nome", "agregado_id", "agregado_nome"}
+    if not required_columns.issubset(df.columns):
+        missing = required_columns - set(df.columns)
+        raise ValueError(f"CSV está faltando colunas obrigatórias: {missing}")
+
+    documents: List[Document] = []
+
+    for _, row in df.iterrows():
+        pesquisa_id = str(row["pesquisa_id"]).strip()
+        pesquisa_nome = str(row["pesquisa_nome"]).strip()
+        agregado_id = str(row["agregado_id"]).strip()
+        agregado_nome = str(row["agregado_nome"]).strip()
+
+        # Pular linhas incompletas
+        if not pesquisa_id or not pesquisa_nome or not agregado_id or not agregado_nome:
+            logger.warning(f"⚠️  Linha ignorada - dados incompletos: {row.to_dict()}")
+            continue
+
+        # 🎯 CONTEÚDO SEMÂNTICO OTIMIZADO PARA BUSCA
+        page_content = (
+            # 1. NOME DO AGREGADO como foco principal
+            f"AGREGADO IBGE: {agregado_nome}.\n"
+            f"Nome completo do agregado: {agregado_nome}.\n"
+            f"Conjunto de dados estatísticos: {agregado_nome}.\n"
+
+            f"Este agregado pertence à pesquisa '{pesquisa_nome}' (código {pesquisa_id}) do IBGE.\n"
+
+            f"Use o código {agregado_id} para acessar os dados agregados sobre {agregado_nome.lower()} "
+            f"da pesquisa {pesquisa_id} ({pesquisa_nome}) do Instituto Brasileiro de Geografia e Estatística."
+        )
+
+        # Criar documento
+        doc = Document(
+            page_content=page_content,
+            metadata={
+                "pesquisa_id": pesquisa_id,
+                "pesquisa_nome": pesquisa_nome,
+                "id": agregado_id,
+                "nome": agregado_nome,
+                "source": "ibge_agregado",  # Alterado para diferenciar
+                "document_type": "aggregate",
+                "origin": "IBGE"
+            }
+        )
+
+        documents.append(doc)
+
+        # Log dos primeiros documentos
+        if len(documents) <= 3:
+            logger.debug(f"📄 Agregado criado: {pesquisa_id}:{agregado_id} - {agregado_nome[:30]}...")
+
+    logger.info(f"✅ {len(documents)} documentos de agregados criados com sucesso")
+    return documents
+
+
 def add_documents_to_vector_store(
         documents: List[Document],
         batch_size: int = 50
@@ -190,12 +272,22 @@ def add_documents_to_vector_store(
             logger.debug(f"  Gerando embeddings para lote {batch_num}...")
             embeddings = embedding_model.embed_documents(texts)
 
-            # Criar IDs únicos
+            # Criar IDs únicos baseados no tipo de documento
             ids = []
             for idx, doc in enumerate(batch):
-                tipo = doc.metadata["tipo"]
-                ident_id = doc.metadata["id"]
-                unique_id = f"ibge_{tipo}_{ident_id}_b{batch_num:03d}_{idx:03d}"
+                source_type = doc.metadata.get("source", "unknown")
+
+                if source_type == "ibge_identificador":
+                    tipo = doc.metadata["tipo"]
+                    ident_id = doc.metadata["id"]
+                    unique_id = f"ibge_ident_{tipo}_{ident_id}_b{batch_num:03d}_{idx:03d}"
+                elif source_type == "ibge_agregado":
+                    agregado_id = doc.metadata["id"]
+                    pesquisa_id = doc.metadata["pesquisa_id"]
+                    unique_id = f"ibge_agreg_{pesquisa_id}_{agregado_id}_b{batch_num:03d}_{idx:03d}"
+                else:
+                    unique_id = f"ibge_unk_{batch_num:03d}_{idx:03d}"
+
                 ids.append(unique_id)
 
             # Adicionar ao vector store
@@ -212,6 +304,7 @@ def add_documents_to_vector_store(
         except Exception as e:
             error_count += len(batch)
             logger.error(f"  ❌ Erro no lote {batch_num}: {str(e)}")
+            raise e
             # Continuar com os próximos lotes
 
     # Resumo final
@@ -266,7 +359,24 @@ def verify_collection() -> None:
         total_docs = cursor.fetchone()[0]
         logger.info(f"  Total de documentos na coleção: {total_docs}")
 
-        # Distribuição por tipo
+        # Distribuição por tipo de fonte
+        cursor.execute("""
+                       SELECT cmetadata ->>'source' as fonte, cmetadata ->>'document_type' as tipo_doc, COUNT (*) as quantidade
+                       FROM langchain_pg_embedding
+                       WHERE collection_id = (
+                           SELECT uuid FROM langchain_pg_collection
+                           WHERE name = %s
+                           )
+                       GROUP BY cmetadata->>'source', cmetadata->>'document_type'
+                       ORDER BY quantidade DESC
+                       """, (kb.vector_store.collection_name,))
+
+        logger.info("  Distribuição por fonte e tipo:")
+        resultados = cursor.fetchall()
+        for fonte, tipo_doc, quantidade in resultados:
+            logger.info(f"    - {fonte} ({tipo_doc}): {quantidade}")
+
+        # Para identificadores: distribuição por tipo
         cursor.execute("""
                        SELECT cmetadata ->>'tipo' as tipo, COUNT (*) as quantidade
                        FROM langchain_pg_embedding
@@ -274,30 +384,51 @@ def verify_collection() -> None:
                            SELECT uuid FROM langchain_pg_collection
                            WHERE name = %s
                            )
+                         AND cmetadata->>'source' = 'ibge_identificador'
                        GROUP BY cmetadata->>'tipo'
                        ORDER BY quantidade DESC
                        """, (kb.vector_store.collection_name,))
 
-        logger.info("  Distribuição por tipo:")
+        logger.info("  Identificadores por tipo:")
         tipos = cursor.fetchall()
         for tipo, quantidade in tipos:
             logger.info(f"    - {tipo}: {quantidade}")
 
-        # Amostra de documentos
+        # Para agregados: distribuição por pesquisa
         cursor.execute("""
-                       SELECT cmetadata ->>'nome' as nome, cmetadata->>'tipo' as tipo, cmetadata->>'id' as id, LENGTH (document) as tamanho
+                       SELECT cmetadata ->>'pesquisa_nome' as pesquisa, COUNT (*) as quantidade
                        FROM langchain_pg_embedding
                        WHERE collection_id = (
                            SELECT uuid FROM langchain_pg_collection
                            WHERE name = %s
                            )
+                         AND cmetadata->>'source' = 'ibge_agregado'
+                       GROUP BY cmetadata->>'pesquisa_nome'
+                       ORDER BY quantidade DESC
+                           LIMIT 10
+                       """, (kb.vector_store.collection_name,))
+
+        logger.info("  Top 10 pesquisas com mais agregados:")
+        pesquisas = cursor.fetchall()
+        for pesquisa, quantidade in pesquisas:
+            logger.info(f"    - {pesquisa}: {quantidade}")
+
+        # Amostra de documentos
+        cursor.execute("""
+                       SELECT cmetadata ->>'source' as fonte, COALESCE (cmetadata->>'nome', cmetadata->>'agregado_nome') as nome, COALESCE (cmetadata->>'id', cmetadata->>'agregado_id') as codigo, LENGTH (document) as tamanho
+                       FROM langchain_pg_embedding
+                       WHERE collection_id = (
+                           SELECT uuid FROM langchain_pg_collection
+                           WHERE name = %s
+                           )
+                       ORDER BY RANDOM()
                            LIMIT 5
                        """, (kb.vector_store.collection_name,))
 
-        logger.info("  Amostra de documentos:")
+        logger.info("  Amostra aleatória de documentos:")
         amostras = cursor.fetchall()
-        for nome, tipo, ident_id, tamanho in amostras:
-            logger.info(f"    - {tipo}:{ident_id} - {nome} ({tamanho} chars)")
+        for fonte, nome, codigo, tamanho in amostras:
+            logger.info(f"    - {fonte}: {codigo} - {nome} ({tamanho} chars)")
 
         cursor.close()
         conn.close()
@@ -340,34 +471,59 @@ def main():
     Função principal para executar o carregamento completo.
     """
     print("\n" + "=" * 60)
-    print("📊 CARGA DE IDENTIFICADORES IBGE - VECTOR STORE")
+    print("📊 CARGA DE DADOS IBGE - VECTOR STORE")
     print("=" * 60 + "\n")
 
-    # Caminho do CSV
-    csv_path = "data/identificadores_ibge.csv"
+    # Caminhos dos CSVs
+    identificadores_path = "data/identificadores_ibge.csv"
+    agregados_path = "data/agregados_ibge.csv"
 
-    # Caminhos alternativos
-    possible_paths = [
-        csv_path,
+    # Caminhos alternativos para identificadores
+    possible_ident_paths = [
+        identificadores_path,
         "src/memory/pgvector/identificadores.csv",
         "data/identificadores.csv",
         "../data/identificadores_ibge.csv",
         str(Path(__file__).parent.parent.parent / "data" / "identificadores_ibge.csv")
     ]
 
-    csv_found = None
-    for path in possible_paths:
+    # Caminhos alternativos para agregados
+    possible_agreg_paths = [
+        agregados_path,
+        "src/memory/pgvector/agregados_ibge.csv",
+        "data/agregados.csv",
+        "../data/agregados_ibge.csv",
+        str(Path(__file__).parent.parent.parent / "data" / "agregados_ibge.csv")
+    ]
+
+    # Encontrar arquivos
+    ident_found = None
+    for path in possible_ident_paths:
         if os.path.exists(path):
-            csv_found = path
+            ident_found = path
             break
 
-    if not csv_found:
+    agreg_found = None
+    for path in possible_agreg_paths:
+        if os.path.exists(path):
+            agreg_found = path
+            break
+
+    if not ident_found and not agreg_found:
         logger.error("❌ Nenhum arquivo CSV encontrado nos caminhos:")
-        for path in possible_paths:
-            logger.error(f"   - {path}")
+        logger.error("   Identificadores:")
+        for path in possible_ident_paths:
+            logger.error(f"     - {path}")
+        logger.error("   Agregados:")
+        for path in possible_agreg_paths:
+            logger.error(f"     - {path}")
         return
 
-    logger.info(f"📂 Usando arquivo: {csv_found}")
+    # Mostrar arquivos encontrados
+    if ident_found:
+        logger.info(f"📂 Arquivo de identificadores: {ident_found}")
+    if agreg_found:
+        logger.info(f"📂 Arquivo de agregados: {agreg_found}")
 
     try:
         # 1. Verificar se coleção existe
@@ -395,24 +551,49 @@ def main():
                 return
             # Se escolher 1, continua normalmente
 
-        # 2. Carregar documentos do CSV
-        print(f"\n📥 1. Carregando documentos do CSV...")
-        documents = load_identificadores_csv(csv_found)
+        all_documents = []
 
-        if not documents:
-            logger.error("❌ Nenhum documento foi gerado do CSV")
+        # 2. Carregar identificadores (se arquivo existir)
+        if ident_found:
+            print(f"\n📥 1. Carregando identificadores do CSV...")
+            ident_docs = load_identificadores_csv(ident_found)
+            all_documents.extend(ident_docs)
+            logger.info(f"✅ {len(ident_docs)} identificadores carregados")
+        else:
+            logger.warning("⚠️  Arquivo de identificadores não encontrado, pulando...")
+
+        # 3. Carregar agregados (se arquivo existir)
+        if agreg_found:
+            print(f"\n📥 2. Carregando agregados do CSV...")
+            agreg_docs = load_agregados_csv(agreg_found)
+            all_documents.extend(agreg_docs)
+            logger.info(f"✅ {len(agreg_docs)} agregados carregados")
+        else:
+            logger.warning("⚠️  Arquivo de agregados não encontrado, pulando...")
+
+        if not all_documents:
+            logger.error("❌ Nenhum documento foi gerado dos CSVs")
             return
 
-        # 3. Adicionar ao vector store
-        print(f"\n⚡ 2. Gerando embeddings e inserindo no vector store...")
-        add_documents_to_vector_store(documents)
+        # 4. Adicionar ao vector store
+        print(f"\n⚡ 3. Gerando embeddings e inserindo no vector store...")
+        add_documents_to_vector_store(all_documents)
 
-        # 4. Verificar carga
-        print(f"\n🔍 3. Verificando carga...")
+        # 5. Verificar carga
+        print(f"\n🔍 4. Verificando carga...")
         verify_collection()
 
         print(f"\n✅ CARGA CONCLUÍDA COM SUCESSO!")
-        print(f"   Total de documentos processados: {len(documents)}")
+        print(f"   Total de documentos processados: {len(all_documents)}")
+
+        # Resumo por tipo
+        ident_count = sum(1 for doc in all_documents if doc.metadata.get("source") == "ibge_identificador")
+        agreg_count = sum(1 for doc in all_documents if doc.metadata.get("source") == "ibge_agregado")
+
+        if ident_count > 0:
+            print(f"   - Identificadores: {ident_count}")
+        if agreg_count > 0:
+            print(f"   - Agregados: {agreg_count}")
 
     except Exception as e:
         logger.error("❌ ERRO NO PROCESSAMENTO", exc_info=True)

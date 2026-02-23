@@ -53,5 +53,8 @@ class CollectorCompleteResult(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
+class AgregadoID(BaseModel):
+    id: int
+
 
 CollectionResult = Union[AssuntoResult, AgregadoResult, VariavelResult, PeriodoResult]

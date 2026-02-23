@@ -15,4 +15,5 @@ dependencies = [
     "notebook>=7.5.1",
     "pandas>=2.3.3",
     "playwright>=1.57.0",
+    "psycopg2-binary>=2.9.11",
 ]

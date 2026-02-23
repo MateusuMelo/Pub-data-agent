@@ -290,3 +290,4 @@ http-client.private.env.json
 
 __pycache__/
 *.pyc
+.aider*

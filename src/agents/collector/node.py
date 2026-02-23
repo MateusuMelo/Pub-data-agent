@@ -8,11 +8,13 @@ from typing import Any, Optional, List, Dict
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate
 
-from src.agents.collector.tools import ibge_agregados_request, ibge_agregado_metadados_request, ibge_agregado_dados_request, \
-    ibge_nivel_geografico_id_search
-from src.agents.collector.agent import collector_agent
-from src.agents.collector.schema import CollectionResult, CollectorCompleteResult
+from src.agents.collector.tools import ibge_agregados_request, ibge_agregado_metadados_request, \
+    ibge_agregado_dados_request, \
+    ibge_nivel_geografico_id_search, ibge_agregado_id_search
+from src.agents.collector.agent import collector_agent_s, collector_agent_m
+from src.agents.collector.schema import CollectionResult, CollectorCompleteResult, AgregadoID
 from src.agents.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -47,17 +49,9 @@ def collector_node(state: AgentState) -> AgentState:
     user_question = extract_last_user_question(state.get("messages", []))
 
     try:
-        # 📋 FLUXO PRINCIPAL DE COLETA
-        # 1. Obter assunto ID
-        assunto_id = get_assunto_id(user_question)
-        logger.info(f"📌 Assunto ID encontrado: {assunto_id}")
-
-        # 2. Obter agregados do assunto
-        agregados = get_agregados_from_assunto(assunto_id)
-        logger.info(f"📊 Agregados obtidos para assunto {assunto_id}")
 
         # 3. Selecionar agregado específico
-        agregados_id = select_agregado_id(agregados, task)
+        agregados_id = select_agregado_id(user_question)
         logger.info(f"🎯 Agregado selecionado: {agregados_id}")
 
         # 4. Obter metadados do agregado
@@ -104,18 +98,17 @@ def collector_node(state: AgentState) -> AgentState:
             errors=[],
             metadata={
                 "task": task,
-                "assunto_id": assunto_id,
+             #   "assunto_id": assunto_id,
                 "agregado_id": agregados_id,
                 "periodo_id": periodo_id,
                 "territorio_id": territorio_id,
                 "variavel_id": variavel_id,
                 "classificacao_id": classificacao_id
             },
-            source_used={"name": "IBGE", "description": f"Agregados for assunto {assunto_id}"},
             filters_applied=parameters.get("filters", {}),
             task=task,
             parameters=parameters,
-            assunto_id=assunto_id,
+            #assunto_id=assunto_id,
             agregado_id=agregados_id,
             periodo_id=periodo_id,
             territorio_id=territorio_id,
@@ -263,21 +256,21 @@ def get_assunto_id(concept: str) -> int:
             HumanMessage(
                 content=(
                     f"Find the subject as the concept: '{concept}'.\n"
-                    "You MUST call the ibge_assunto_id_search tool.\n"
+                    "You MUST call the ibge_agregado_id_search tool.\n"
                     "Calling this tool more than once is FORBIDDEN.\n"
                     "You MUST select only a subject that matches the SAME meaning, not a related or approximate one.\n"
                     "After calling the tool, you MUST stop.\n"
                     "Your FINAL output MUST be a valid JSON object.\n"
                     "Do NOT include explanations, markdown, comments, or extra text.\n"
                     "Return EXACTLY this format:\n"
-                    "{\"id\": \"<ID_ASSUNTO>\"}\n"
+                    "{\"id\": \"<ID_AGREGADO>\"}\n"
                     "This is a FINAL answer. Do not perform any additional reasoning or actions."
                 )
             ),
         ]
     }
 
-    response = collector_agent.invoke(assunto_agent_input)
+    response = collector_agent_s.invoke(assunto_agent_input)
     assunto_id = _parse_assunto_collector_result(response)
 
     if assunto_id is None:
@@ -292,31 +285,64 @@ def get_agregados_from_assunto(assunto_id: int) -> dict:
     return ibge_agregados_request.invoke(agregados_input)
 
 
-def select_agregado_id(agregados: dict, task: str) -> int:
+def select_agregado_id(task: str) -> int:
     """Seleciona o agregado mais relevante para a tarefa."""
-    agregados_list = agregados.get('temas_encontrados', [{}])[0].get('agregados', [])
 
-    if not agregados_list:
-        raise ValueError("Nenhum agregado encontrado para este assunto")
+    agregados_list = ibge_agregado_id_search.invoke({"query": task})
 
-    agregado_agent_input = {
-        "messages": [
-            HumanMessage(
-                content=f"Among these aggregates {agregados_list}, identify the single one that is most related to the objective: {task}.\n"
-                        "You must not call any tool.\n"
-                        "Your response must be only: {\"id\":{{id_agregado}}}"
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are a helpful assistant.\n"
+                "Your job is to select the correct IBGE agregado id.\n"
+                "You MUST follow all rules strictly."
+            ),
+            (
+                "system",
+                "CONTEXT:\n"
+                "Below is a list of IBGE agregados already retrieved.\n"
+                "You MUST choose ONLY from this list.\n\n"
+                "Agregados list (JSON):\n"
+                "{agregados_list}"
+            ),
+            (
+                "system",
+                "RULES:\n"
+                "- You MUST select the agregado with the EXACT SAME meaning.\n"
+                "- Do NOT select related, broader, narrower, or approximate concepts.\n"
+                "- You MUST NOT call any tool.\n"
+                "- You MUST NOT invent or modify ids.\n"
+                "- You MUST return an id that exists in the provided list.\n"
+                "- Your FINAL output MUST be a valid JSON object.\n"
+                "- Do NOT include explanations, markdown, comments, or extra text.\n\n"
+                "Return EXACTLY this format:\n"
+                "{{\"id\": \"<id>\"}}"
+            ),
+            MessagesPlaceholder(variable_name="chat_history"),
+            (
+                "human",
+                "Task concept to match:\n\"{task}\""
             ),
         ]
-    }
+    )
 
-    response = collector_agent.invoke(agregado_agent_input)
+    messages = prompt.format_messages(
+        task=task,
+        agregados_list=agregados_list,
+        chat_history=[],
+    )
+
+    response: AgregadoID = collector_agent_m.invoke(messages)
+
+
     agregado_id = _parse_assunto_collector_result(response)
-    agregado_id = int(agregado_id) if type(agregado_id) is str else agregado_id
+    agregado_id = int(agregado_id) if isinstance(agregado_id, str) else agregado_id
+
     if agregado_id is None:
         raise ValueError("Não foi possível selecionar o agregado")
 
     return agregado_id
-
 
 def get_agregado_metadata(agregado_id: int) -> dict:
     """Obtém metadados completos de um agregado."""
@@ -348,7 +374,7 @@ def select_periodo_id(agregados_metadados: dict, task: str) -> int:
         ]
     }
 
-    response = collector_agent.invoke(select_periodo_input)
+    response = collector_agent_s.invoke(select_periodo_input)
     periodo_id = _parse_assunto_collector_result(response)
 
     # Garantir que é inteiro
@@ -434,7 +460,7 @@ def select_territorio_id(agregados_metadados: dict, task: str) -> str:
     }
 
     # 4. Agente só decide
-    response = collector_agent.invoke(select_territorio_input)
+    response = collector_agent_s.invoke(select_territorio_input)
     territorio_id = _parse_territorio_collector_result(response)
 
     # 5. Fallback
@@ -460,7 +486,7 @@ def select_variavel_id(agregados_metadados: dict, task: str) -> int:
             ),
         ]
     }
-    response = collector_agent.invoke(select_variavel_input)
+    response = collector_agent_s.invoke(select_variavel_input)
     variavel_id = _parse_assunto_collector_result(response)
 
     if variavel_id is None:

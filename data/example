@@ -1,0 +1,3 @@
+https://servicodados.ibge.gov.br/api/v3/agregados/7360/periodos/2018/variaveis/10600?localidades=N1[all]&classificacao=1933[49033]
+https://servicodados.ibge.gov.br/api/v3/agregados/4/periodos/200212/variaveis/8?localidades=N110[all]&classificacao=2[all]
+https://servicodados.ibge.gov.br/api/v3/agregados/{agregado}}/periodos/{periodo}/variaveis/{variavel}}?localidades={territorio}[all]&classificacao={classificacao}[all]
